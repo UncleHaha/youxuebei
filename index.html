@@ -1,0 +1,356 @@
+<html lang="zh">
+<head>
+  <meta charset="UTF-8" />
+  <title>辩论计时器</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      overflow: hidden;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans SC", sans-serif;
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      color: #ffffff;
+
+        /* 新增 flex 居中 */
+      display: flex;
+      justify-content: center; /* 水平居中 */
+      align-items: center;     /* 垂直居中 */
+      
+    }
+    #controls { position: absolute; top: 10px; left: 10px; }
+    #navigation { position: absolute; top: 10px; right: 10px; }
+    /* 永久隐藏场景名 —— 满足需求 1 */
+    #scene-name { position: absolute; top: 18vh; width: 100%; text-align: center; font-size: 2.8em; font-weight: 700; letter-spacing: 0.1em; display: none; }
+    #timer { width: 100%; text-align: center; font-size: 14em; font-weight: bold; }
+    #duibian-box {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      width: min(96vw, 1600px);   /* 小屏不低于 640px，大屏不超过 1400px */
+      gap: clamp(2rem, 8vw, 10rem);       /* 间距在 4rem~12rem 之间随屏适配 */
+      margin: 0 auto;
+      padding-inline: 2vw;
+    }
+   #timer-left, #timer-right {
+      font-size: clamp(6rem, 14vw, 14rem);
+      font-weight: bold;
+      text-align: center;
+      width: auto;
+    }
+    .buttons { position: absolute; bottom: 270px; width: 100%; text-align: center; }
+    button {
+      font-size: 1em; margin: 0 10px; padding: 10px 20px;
+      border: none; border-radius: 10px; font-weight: bold;
+      background-color: #ffffff; color: #df9a23; box-shadow: 0 2px 8px rgba(0,0,0,0.3); cursor: pointer;
+    }
+    button:hover { background-color: #f0f0f0; }
+  </style>
+</head>
+<body>
+  <div id="controls"><button onclick="prevScene()">←</button></div>
+  <div id="navigation"><button onclick="nextScene()">→</button></div>
+
+  <div id="scene-name"></div>
+  <div id="timer">00:00</div>
+
+  <!-- 对辩双计时器容器 -->
+  <div id="duibian-box">
+    <div id="timer-left">02:00</div>
+    <div id="timer-right">02:00</div>
+  </div>
+
+  <div class="buttons">
+    <button onclick="startTimer()">开始</button>
+    <button onclick="pauseTimer()">暂停</button>
+    <button onclick="resetTimer()">重置</button>
+    <button id="start-right-btn" onclick="startRightTimer()" style="display:none">开始</button> <!-- 右边的开始 -->
+  </div>
+
+
+  <audio id="alert-sound"></audio>
+  <audio id="jazz-player" loop>
+    <source src="assets/sounds/classical.mp3" type="audio/mpeg" />
+  </audio>
+
+  <script>
+    const SCENES = [
+      { name: "赛前准备", time: 1, background: "assets/images/14.png", alerts: [] },
+      { name: "开始", time: 1, background: "assets/images/18.png", alerts: [] },
+      { name: "申论", time: 180, background: "assets/images/19.png", alerts: [{time: 30, sound: "assets/sounds/30s.mp3"}, {time: 0, sound: "assets/sounds/Dindin.mp3"}] },
+      { name: "对辩", type: "duibian", background: "assets/images/20.png", sides: [ {label: "正方", time: 10}, {label: "反方", time: 15} ], alerts: [{time: 30, sound: "assets/sounds/30s.mp3"}, {time: 0, sound: "assets/sounds/Dindin.mp3"}] },
+      { name: "中休", time: 120, background: "assets/images/21.png", alerts: [{time: 30, sound: "assets/sounds/30s.mp3"}, {time: 0, sound: "assets/sounds/Dindin.mp3"}] },
+      { name: "总结", time: 180, background: "assets/images/22.png", alerts: [{time: 30, sound: "assets/sounds/30s.mp3"}, {time: 0, sound: "assets/sounds/Dindin.mp3"}] },
+      { name: "队伍缓冲", type: "duibian", background: "assets/images/23.png", sides: [ {label: "正方", time: 300}, {label: "反方", time: 300} ], alerts: [{time: 30, sound: "assets/sounds/30s.mp3"}, {time: 0, sound: "assets/sounds/Dindin.mp3"}] },
+      { name: "评审缓冲", time: 1, background: "assets/images/24.png", alerts: [] },
+      { name: "点评", time: 420, background: "assets/images/25.png", alerts: [{time: 30, sound: "assets/sounds/30s.mp3"}, {time: 0, sound: "assets/sounds/Dindin.mp3"}] },
+      { name: "点评", time: 600, background: "assets/images/25.png", alerts: [{time: 30, sound: "assets/sounds/30s.mp3"}, {time: 0, sound: "assets/sounds/Dindin.mp3"}] },
+      { name: "补充", time: 120, background: "assets/images/26.png", alerts: [{time: 30, sound: "assets/sounds/30s.mp3"}, {time: 0, sound: "assets/sounds/Dindin.mp3"}] },
+      { name: "赛果公布", time: 1, background: "assets/images/27.png", alerts: [] }
+    ];
+
+    let currentIndex = 0;
+    let timerInterval = null;
+    let currentTime = 0;
+
+    // 对辩状态
+    let isDuiBian = false;
+    let sideIndex = 0; // 0=正方，1=反方
+    let sideTimes = [120, 120];
+    
+    // 保存每个场景的计时状态
+    const sceneState = new Map(); // key: index, value: { type:'single'|'duibian', currentTime?, sideTimes?, sideIndex? }
+    
+    function saveCurrentState() {
+      const state = isDuiBian
+        ? { type: 'duibian', sideTimes: [...sideTimes], sideIndex }
+        : { type: 'single', currentTime };
+      sceneState.set(currentIndex, state);
+    }
+
+
+    const sceneName = document.getElementById("scene-name");
+    const timerDisplay = document.getElementById("timer");
+    const timerLeft = document.getElementById("timer-left");
+    const timerRight = document.getElementById("timer-right");
+    const duibianBox = document.getElementById("duibian-box");
+    const alertSound = document.getElementById("alert-sound");
+
+    function formatTime(sec) {
+      const m = String(Math.floor(sec / 60)).padStart(2, '0');
+      const s = String(sec % 60).padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    function updateDisplay() {
+      if (isDuiBian) {
+        timerLeft.textContent = formatTime(sideTimes[0]);
+        timerRight.textContent = formatTime(sideTimes[1]);
+      } else {
+        timerDisplay.textContent = formatTime(currentTime);
+      }
+    }
+
+    function loadScene(index) {
+      clearInterval(timerInterval); timerInterval = null;
+      currentIndex = index;
+      const scene = SCENES[index];
+
+      const jazzPlayer = document.getElementById("jazz-player");
+      jazzPlayer.pause(); jazzPlayer.currentTime = 0;
+      if (scene.name === "评审缓冲") { jazzPlayer.play(); }
+
+      // 不再根据场景名显示 #scene-name —— 永久隐藏（需求 1）
+      document.getElementById("scene-name").style.display = "none";
+
+      // 原有逻辑：控制按钮显示（特殊处理在下方覆盖）
+      const hideButtons = ["开始", "评审缓冲", "赛果公布"];
+      document.querySelector(".buttons").style.display = hideButtons.includes(scene.name) ? "none" : "block";
+
+      // 特殊：这些场景需要隐藏计时与按钮
+      const hiddenScenes = ["赛前准备", "开始", "评审缓冲", "赛果公布"];
+      if (hiddenScenes.includes(scene.name)) {
+        document.getElementById("timer").style.display = "none";
+        duibianBox.style.display = "none";
+        document.querySelector(".buttons").style.display = "none";
+        document.body.style.backgroundImage = `url('${scene.background}')`;
+        return; // 不初始化计时
+      }
+
+
+      // 普通/对辩切换 + 恢复状态
+      isDuiBian = scene.type === "duibian";
+      const saved = sceneState.get(index);
+      
+      const startRightBtn = document.getElementById("start-right-btn");
+      
+      if (isDuiBian) {
+        document.getElementById("timer").style.display = "none";
+        duibianBox.style.display = "flex";
+        startRightBtn.style.display = "inline-block";
+      
+        if (saved && saved.type === 'duibian') {
+          sideTimes = [...saved.sideTimes];
+          sideIndex = saved.sideIndex ?? 0;
+        } else {
+          sideIndex = 0;
+          sideTimes = [scene.sides[0].time, scene.sides[1].time];
+        }
+        currentTime = 0; // 对辩模式不使用单计时器
+      } else {
+        duibianBox.style.display = "none";
+        startRightBtn.style.display = "none"; 
+        document.getElementById("timer").style.display = "block";
+      
+        if (saved && saved.type === 'single') {
+          currentTime = saved.currentTime;
+        } else {
+          currentTime = scene.time;
+        }
+      }
+
+
+      document.body.style.backgroundImage = `url('${scene.background}')`;
+      // sceneName.textContent = scene.name; // 已永久隐藏，无需赋值，但保留不影响
+      updateDisplay();
+    }
+    
+        // 通用：启动某一侧的计时（0=左，1=右）
+    function startSide(which) {
+      if (!isDuiBian) { 
+        // 单计时场景：直接走原本 startTimer 逻辑
+        startTimer();
+        return;
+      }
+      if (timerInterval) {  // 先清掉旧的 interval
+        clearInterval(timerInterval);
+        timerInterval = null;
+      }
+      sideIndex = which;  // 指定当前要跑哪一边
+      updateDisplay();
+    
+      timerInterval = setInterval(() => {
+        const scene = SCENES[currentIndex];
+        sideTimes[sideIndex]--;
+        updateDisplay();
+    
+        scene.alerts && scene.alerts.forEach(alert => {
+          if (alert.time === sideTimes[sideIndex]) {
+            alertSound.src = alert.sound;
+            alertSound.volume = 1.0;
+            alertSound.play();
+          }
+        });
+    
+        if (sideTimes[sideIndex] <= 0) {
+          clearInterval(timerInterval);
+          timerInterval = null;
+        }
+      }, 1000);
+    }
+    
+    // 新的右边“开始”按钮
+    function startRightTimer() {
+      startSide(1); // 启动右边
+    }
+
+
+    function startTimer() {
+      if (timerInterval) return;
+      timerInterval = setInterval(() => {
+        const scene = SCENES[currentIndex];
+
+          if (isDuiBian) {
+            startSide(0); // 启动左边
+            return;
+
+          scene.alerts && scene.alerts.forEach(alert => {
+            if (alert.time === sideTimes[sideIndex]) {
+              alertSound.src = alert.sound;
+              alertSound.volume = 1.0;
+              alertSound.play();
+            }
+          });
+
+          if (sideTimes[sideIndex] <= 0) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+          }
+        } else {
+          currentTime--;
+          updateDisplay();
+
+          scene.alerts && scene.alerts.forEach(alert => {
+            if (alert.time === currentTime) {
+              alertSound.src = alert.sound;
+              alertSound.volume = 1.0;
+              alertSound.play();
+            }
+          });
+
+          if (currentTime <= 0) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+          }
+        }
+      }, 1000);
+    }
+
+    function pauseTimer() {
+      clearInterval(timerInterval);
+      timerInterval = null;
+    }
+
+    function resetTimer() {
+        clearInterval(timerInterval);
+        timerInterval = null;
+        const scene = SCENES[currentIndex];
+        if (isDuiBian) {
+          sideTimes = [scene.sides[0].time, scene.sides[1].time];
+          sideIndex = 0;
+          sceneState.set(currentIndex, { type:'duibian', sideTimes:[...sideTimes], sideIndex });
+        } else {
+          currentTime = scene.time;
+          sceneState.set(currentIndex, { type:'single', currentTime });
+        }
+        updateDisplay();
+      }
+
+
+    function switchSides() {
+      if (!isDuiBian) return;
+
+      const wasRunning = !!timerInterval;
+      if (wasRunning) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+     }
+
+    // 切换当前侧：0<->1
+    sideIndex = sideIndex === 0 ? 1 : 0;
+    updateDisplay();
+
+    // 关键：如果当前未在计时，按“切换”也会直接开始从新的一侧计时
+    if (!wasRunning) {
+      startTimer();
+    } else {
+      // 如果原本在计时，保持原有逻辑：切侧后继续跑
+      startTimer();
+    }
+  }
+
+
+      function nextScene() {
+    if (currentIndex < SCENES.length - 1) {
+      saveCurrentState();
+      loadScene(currentIndex + 1);
+    }
+  }
+  function prevScene() {
+    if (currentIndex > 0) {
+      saveCurrentState();
+      loadScene(currentIndex - 1);
+    }
+  }
+
+
+    // ---- Minimal Self Tests (不会影响 UI) ----
+    (function selfTests(){
+      try {
+        console.assert(formatTime(0) === '00:00', 'formatTime(0) 应为 00:00');
+        console.assert(formatTime(65) === '01:05', 'formatTime(65) 应为 01:05');
+        console.assert(SCENES[0].name === '赛前准备', '首个场景应为 赛前准备');
+        console.assert(SCENES.some(s => s.name === '队伍缓冲' && s.type === 'duibian'), '应包含 队伍缓冲 场景');
+        console.assert(typeof nextScene === 'function' && typeof prevScene === 'function', '导航函数应已定义');
+        console.log('[SelfTests] All passed');
+      } catch (e) {
+        console.error('[SelfTests] Failed', e);
+      }
+    })();
+
+    loadScene(0);
+  </script>
+</body>
+</html>
